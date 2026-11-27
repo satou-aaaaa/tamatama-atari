@@ -11,6 +11,7 @@ import path from "node:path";
 import { checkTransfer } from "./transfer-check.mjs";
 import { checkSwStall } from "./sw-check.mjs";
 import { checkDepth } from "./depth-check.mjs";
+import { checkCore } from "./core-check.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const results = [];
@@ -177,6 +178,14 @@ try {
     await r.evaluate(() => localStorage.clear()); await r.reload(); await r.waitForTimeout(200);
     check("はじめての練習が始まったその場で「見た」が残る", await r.evaluate(() => { return Object.keys(localStorage).some((k) => { try { return JSON.parse(localStorage.getItem(k)).tut === true; } catch { return false; } }); })); await firstClose(r);
     await r.reload(); await r.waitForTimeout(200); check("遊び方を「わかった」で閉じてすぐ読み直しても出ない（その場で残す）", await r.locator("#howto[open]").count() === 0); await c.close(); }
+  { // はじめての練習の案内のまま ← でホームへ戻っても、案内は終わり、今日の5問に吹き出しが付かない（PR #1 の CodeRabbit）
+    const c = await browser.newContext({ viewport: { width: 390, height: 800 } }); const r = await c.newPage(); await r.goto(url); await r.waitForTimeout(300);
+    const on0 = await r.evaluate(() => Core.coach.active());
+    await r.evaluate(() => document.getElementById("back").click()); await r.waitForTimeout(200);
+    const on1 = await r.evaluate(() => Core.coach.active()), home1 = await r.locator("#go-d").count();
+    await r.click("#go-d"); await r.waitForTimeout(300);
+    check("はじめての練習の案内のまま ← でホームへ戻ると案内が終わり、今日の5問に吹き出しが出ない", on0 && !on1 && home1 === 1 && await r.locator("#core-coach").count() === 0 && !(await r.evaluate(() => Core.coach.active())), `${on0}/${on1}/${home1}`);
+    await c.close(); }
   await firstClose(p);
   check("文字の大きさ：はじめは「大きい」（19px）", await p.evaluate(() => getComputedStyle(document.documentElement).fontSize) === "19px");
   await p.click('.fsrow button[data-fs="3"]');
@@ -433,6 +442,8 @@ try {
     const dp = await q.evaluate(() => JSON.parse(localStorage.getItem("tmt-depth") || "{}"));
     check("まちがえた・ヒントを使った問題だけ復習に入る", Object.keys(dp.rv || {}).join() === "tomatta|dp1", Object.keys(dp.rv || {}).join(","));
     await q.evaluate(() => { const d = JSON.parse(localStorage.getItem("tmt-depth")); for (const k in d.rv) d.rv[k].due = "2026-01-01"; localStorage.setItem("tmt-depth", JSON.stringify(d)); });
+    // 復習の日付は、ブラウザの時計を TODAY の正午（日本時間）に止めてから数える（QA の途中で0時をまたいでも期待値とずれない。PR #1 の CodeRabbit）
+    { const T0 = Date.parse(TODAY + "T03:00:00Z"); await q.addInitScript((t0) => { const o = Date.now, s0 = o(); Date.now = () => t0 + (o() - s0); }, T0); }
     await q.goto(url); await q.waitForTimeout(150);
     check("日の来た復習があると、ホームに「復習 1問」", (await q.textContent("#go-r")).includes("復習 1問"));
     const before = await mem(q);
@@ -501,11 +512,15 @@ try {
   // キーボードだけで遊べる（Tab と Enter）
   {
     const q = await newPage(); await closeHow(q);
-    await q.focus("#go-d"); await q.keyboard.press("Enter"); await q.waitForTimeout(100);
+    // focus() で直接移さず、Tab だけで届くかを見る（tabindex=-1 などで Tab で届かないのを見逃さない。PR #1 の CodeRabbit）
+    const tabTo = async (sel) => { for (let n = 0; n < 60; n++) { await q.keyboard.press("Tab"); if (await q.evaluate((x) => !!document.activeElement && document.activeElement.matches(x), sel)) return true; } return false; };
+    await q.evaluate(() => { document.activeElement && document.activeElement.blur && document.activeElement.blur(); scrollTo(0, 0); });
+    const t1 = await tabTo("#go-d"); if (t1) { await q.keyboard.press("Enter"); await q.waitForTimeout(100); }
     const j = await ansIdx(q);
-    await q.focus(`.ch[data-j="${j}"]`); await q.keyboard.press("Enter"); await q.waitForTimeout(100);
-    if (await q.locator(".why button").count()) { await q.focus(`.why button[data-g="${await q.evaluate(() => __nm.cur().P.grp)}"]`); await q.keyboard.press("Enter"); await q.waitForTimeout(100); }
-    check("キーボードだけで選んで答えられる（2段目もキーボードで）", await q.locator(".verdict").count() === 1);
+    const t2 = await tabTo(`.ch[data-j="${j}"]`); if (t2) { await q.keyboard.press("Enter"); await q.waitForTimeout(100); }
+    let t3 = true;
+    if (await q.locator(".why button").count()) { t3 = await tabTo(`.why button[data-g="${await q.evaluate(() => __nm.cur().P.grp)}"]`); if (t3) { await q.keyboard.press("Enter"); await q.waitForTimeout(100); } }
+    check("キーボード（Tab と Enter）だけで、始める・答える（2段目も）", t1 && t2 && t3 && await q.locator(".verdict").count() === 1, `${t1}/${t2}/${t3}`);
     await q.context().close();
   }
 } catch (e) { check("ブラウザでの検査が最後まで動く", false, e.stack.split("\n").slice(0, 3).join(" ")); }
@@ -540,6 +555,11 @@ try {
   const sample = { "tmt-v1": JSON.stringify({ v: 1, tut: true, days: { "2026-11-13": { m: [0, 1, 0, 0, 2], k: ["tokei", "tomatta", "hitsuji", "eigyo", "yume"] } }, hdays: {}, adays: {}, dex: { "tokei": 1, "tomatta": 1, "hitsuji": 1, "eigyo": 1, "yume": 1 }, runs: {}, kofi: {}, ach: {}, ebest: 7, t: 1 }), "tmt-fs": "3", "tmt-depth": JSON.stringify({ v: 1, rv: { "tomatta|x1": { s: 1, due: "2026-11-20", t: 5 } } }) }; // 復習の記録も引き継ぐかを見る（CodeRabbit menkyo-nenrei#1）
   await checkTransfer({ browser, url, game: "tamatama-atari", sample, check, open: async (pg) => { await firstClose(pg); } });
 } catch (e) { check("引き継ぎの検査が最後まで動く", false, e.message.split("\n")[0]); }
+// 共通部品 game-core の画面の動き（感想のリンク・はじめての練習と吹き出し・遊び方のボタン・不具合の帯。shared-workflows template/qa/core-check.mjs。PR #1 の CodeRabbit）
+// はじめての案内の吹き出しの検査は飛ばす（first: false）：このゲームの2つ目の吹き出しは「.verdict を待つ」段で、待つあいだ吹き出しは隠れるが
+// 「やってみる」のボタンに hidden が付かず、core-check が見えないボタンを30秒押しに行って止まる（ひな形 core-check の直しは shared-workflows で）。
+// はじめての案内は、このファイルの上の検査（はじめて開くと出る・← で戻ると終わる）で見る
+try { await checkCore({ browser, url, check, first: false }); } catch (e) { check("game-core の検査が最後まで動く", false, String(e).split("\n")[0]); }
 await browser.close();
 server.close();
 check("画面のエラーが無い", errors.length === 0, errors.slice(0, 3).join(" | "));

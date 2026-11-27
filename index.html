@@ -1636,6 +1636,9 @@ $("howto").addEventListener("close", () => { if (!load().tut) save((s) => { s.tu
 $("howto-ok").onclick = () => { save((s) => { s.tut = true; }); const d = $("howto"); d.close ? d.close() : d.removeAttribute("open"); }; // 押したらすぐ残す
 
 function home() {
+  // はじめての練習の案内のまま ← や「戻る」でホームへ来たら、案内を閉じたときと同じに終える（監視が残って、ほかの問題に吹き出しが付かないように。PR #1 の CodeRabbit）
+  // stop(false) は onEnd で途中の練習を片付けてホームを描くので、ここで止めて終わる
+  if (window.Core && Core.coach && Core.coach.active()) { Core.coach.stop(false); return; }
   Core.screens.route({}, home); Core.screens.mark(""); // 「戻る」でホームへ（sync-template の migrateBack）
   const s = load(), k = todayKey(), done = s.days[k], hdone = s.hdays[k];
   // 最後の1問を解いて結果を見る前に閉じた回は、開き直したら結果へ進める（記録をつける）
